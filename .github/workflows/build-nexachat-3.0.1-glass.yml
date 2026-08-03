@@ -1,0 +1,99 @@
+name: Build NexaChat 3.0.1 Liquid Glass
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "NexaChat-v3.0.1-glass-source.zip"
+      - ".github/workflows/build-nexachat-3.0.1-glass.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: test-lint-apk
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+
+    steps:
+      - name: Download repository
+        uses: actions/checkout@v4
+
+      - name: Verify source archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f NexaChat-v3.0.1-glass-source.zip
+          echo "9806a152df0a4d2c018c0c6a708fa854acb57f3f2682d16ab342494d0615dd7a  NexaChat-v3.0.1-glass-source.zip" | sha256sum --check --strict
+
+      - name: Unpack NexaChat 3.0.1
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/nexachat-301
+          mkdir -p /tmp/nexachat-301
+          unzip -q NexaChat-v3.0.1-glass-source.zip -d /tmp/nexachat-301
+          cp -a /tmp/nexachat-301/NexaChat-v3.0.1-glass/. .
+          test -f settings.gradle.kts
+          test -f app/build.gradle.kts
+          grep -nE 'compileSdk|targetSdk|versionName' app/build.gradle.kts
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK 36
+        shell: bash
+        run: |
+          set -euo pipefail
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager "platform-tools" "platforms;android-36" "build-tools;36.0.0"
+
+      - name: Set up Gradle cache
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Static verification
+        run: |
+          chmod +x gradlew tools/verify-static.sh
+          ./tools/verify-static.sh
+
+      - name: Unit tests and debug APK
+        shell: bash
+        run: |
+          set -o pipefail
+          ./gradlew --no-daemon --stacktrace :app:testDebugUnitTest :app:assembleDebug 2>&1 | tee build.log
+          cp app/build/outputs/apk/debug/app-debug.apk NexaChat-3.0.1-Liquid-Glass-debug.apk
+
+      - name: Android lint
+        shell: bash
+        run: |
+          set -o pipefail
+          ./gradlew --no-daemon --stacktrace :app:lintDebug 2>&1 | tee -a build.log
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: NexaChat-3.0.1-Liquid-Glass-APK
+          path: NexaChat-3.0.1-Liquid-Glass-debug.apk
+          if-no-files-found: error
+          retention-days: 21
+
+      - name: Upload reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: NexaChat-3.0.1-build-reports
+          path: |
+            build.log
+            app/build/reports/tests/testDebugUnitTest/**
+            app/build/reports/lint-results-debug.html
+            app/build/reports/lint-results-debug.xml
+          if-no-files-found: ignore
+          retention-days: 7
