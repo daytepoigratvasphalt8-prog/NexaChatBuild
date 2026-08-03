@@ -1,0 +1,79 @@
+name: Build NexaChat 2.2 iOS
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Download repository
+        uses: actions/checkout@v4
+
+      - name: Verify source archive
+        run: |
+          test -f NexaChat-v2.2-ios-source.zip
+          echo "820a291bd71dcb30043ef2f5228a6151c5f0e9169dae9ad11e5b31bf585a299c  NexaChat-v2.2-ios-source.zip" | sha256sum --check
+
+      - name: Unpack NexaChat 2.2
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/nexachat-2-2
+          mkdir -p /tmp/nexachat-2-2
+          unzip -q NexaChat-v2.2-ios-source.zip -d /tmp/nexachat-2-2
+          cp -a /tmp/nexachat-2-2/NexaChat-v2.2-ios/. .
+          test -f settings.gradle.kts
+          test -f app/build.gradle.kts
+          grep -nE 'compileSdk|targetSdk|versionName' app/build.gradle.kts
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK 36
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager "platform-tools" "platforms;android-36" "build-tools;36.0.0"
+
+      - name: Verify project
+        run: |
+          chmod +x gradlew tools/verify-static.sh
+          ./tools/verify-static.sh
+
+      - name: Build debug APK
+        shell: bash
+        run: |
+          set -o pipefail
+          ./gradlew --no-daemon --stacktrace :app:assembleDebug | tee build.log
+          cp app/build/outputs/apk/debug/app-debug.apk NexaChat-2.2-ios-debug.apk
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: NexaChat-2.2-ios-debug-apk
+          path: NexaChat-2.2-ios-debug.apk
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: NexaChat-2.2-build-log
+          path: build.log
+          if-no-files-found: ignore
+          retention-days: 7
