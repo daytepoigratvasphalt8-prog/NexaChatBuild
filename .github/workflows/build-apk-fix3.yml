@@ -1,0 +1,94 @@
+name: Build NexaChat APK 36 fix 3
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Download repository
+        uses: actions/checkout@v4
+
+      - name: Verify source archive
+        run: |
+          test -f NexaChat-v2-source.zip
+          echo "c912b1a379c57925a77e43b44202e3a1d603a249ea12a89c0676cd04bdd93f35  NexaChat-v2-source.zip" | sha256sum --check
+
+      - name: Unpack and patch NexaChat
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -rf /tmp/nexachat
+          mkdir -p /tmp/nexachat
+          unzip -q NexaChat-v2-source.zip -d /tmp/nexachat
+          cp -a /tmp/nexachat/NexaChat-v2/. .
+
+          test -f settings.gradle.kts
+          test -f app/build.gradle.kts
+
+          # GitHub runner currently provides stable Android SDK 36.
+          sed -i 's/compileSdk = 37/compileSdk = 36/' app/build.gradle.kts
+          sed -i 's/targetSdk = 37/targetSdk = 36/' app/build.gradle.kts
+
+          # Compose 2026 exposes weight through RowScope/ColumnScope.
+          # These explicit imports resolve to an internal property and break Kotlin compilation.
+          find app/src/main/java -name '*.kt' -print0 |
+            xargs -0 sed -i '/^import androidx\.compose\.foundation\.layout\.weight$/d'
+
+          echo "SDK values:"
+          grep -nE 'compileSdk|targetSdk' app/build.gradle.kts
+
+          echo "Remaining invalid weight imports:"
+          if grep -R '^import androidx\.compose\.foundation\.layout\.weight$' app/src/main/java; then
+            exit 1
+          else
+            echo "none"
+          fi
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK 36
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager "platform-tools" "platforms;android-36" "build-tools;36.0.0"
+
+      - name: Build debug APK
+        shell: bash
+        run: |
+          set -o pipefail
+          chmod +x gradlew
+          ./gradlew --no-daemon --stacktrace :app:assembleDebug | tee build.log
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: NexaChat-debug-apk
+          path: app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: NexaChat-build-log
+          path: build.log
+          if-no-files-found: ignore
+          retention-days: 7
