@@ -1,0 +1,134 @@
+name: Build NexaChat 3.4 Full
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "NexaChat-3.4-Full-source.zip"
+      - ".github/workflows/NexaChat-3.4-Full-build.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nexachat-3.4-full-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build 140 MB feature APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Unpack source
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f NexaChat-3.4-Full-source.zip
+          unzip -tq NexaChat-3.4-Full-source.zip
+          rm -rf "$RUNNER_TEMP/nexa"
+          mkdir -p "$RUNNER_TEMP/nexa"
+          unzip -q NexaChat-3.4-Full-source.zip -d "$RUNNER_TEMP/nexa"
+          SETTINGS="$(find "$RUNNER_TEMP/nexa" -name settings.gradle.kts -print -quit)"
+          test -n "$SETTINGS"
+          PROJECT="$(dirname "$SETTINGS")"
+          cp -a "$PROJECT/." "$GITHUB_WORKSPACE/"
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install feature-pack generator
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install "pillow==12.2.0" "numpy==2.3.5"
+
+      - name: Generate useful built-in content
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x tools/generate_feature_pack.py
+          python tools/generate_feature_pack.py | tee feature-pack.log
+          test "$(find app/src/main/assets/nexa_pack/wallpapers -name 'wallpaper_*.jpg' | wc -l)" -eq 60
+          test "$(find app/src/main/assets/nexa_pack/stickers -name 'sticker_*.png' | wc -l)" -eq 180
+          test ! -d app/src/main/assets/nexa_pack/sounds
+          du -sh app/src/main/assets/nexa_pack
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager "platform-tools" "platforms;android-36" "build-tools;36.0.0"
+
+      - name: Set up Gradle 9.4.1
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "9.4.1"
+
+      - name: Verify source
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x tools/verify-static.sh
+          ./tools/verify-static.sh
+
+      - name: Test and build APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          gradle --no-daemon --stacktrace \
+            :app:testDebugUnitTest \
+            :app:assembleDebug 2>&1 | tee build.log
+
+          APK="$(find app/build/outputs/apk/debug -name '*.apk' -print -quit)"
+          test -n "$APK"
+          cp "$APK" NexaChat-3.4-Full-debug.apk
+          sha256sum NexaChat-3.4-Full-debug.apk > NexaChat-3.4-Full-debug.apk.sha256
+          "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --verbose NexaChat-3.4-Full-debug.apk
+
+          SIZE_BYTES="$(stat -c%s NexaChat-3.4-Full-debug.apk)"
+          SIZE_MIB="$((SIZE_BYTES / 1024 / 1024))"
+          echo "APK size: ${SIZE_MIB} MiB"
+          test "$SIZE_MIB" -ge 130
+          test "$SIZE_MIB" -le 155
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: NexaChat-3.4-Full-APK
+          path: |
+            NexaChat-3.4-Full-debug.apk
+            NexaChat-3.4-Full-debug.apk.sha256
+          if-no-files-found: error
+          retention-days: 21
+          compression-level: 0
+
+      - name: Upload reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: NexaChat-3.4-Full-reports
+          path: |
+            build.log
+            feature-pack.log
+            app/build/reports/**
+            app/build/test-results/**
+          if-no-files-found: ignore
+          retention-days: 7
